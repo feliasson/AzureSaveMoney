@@ -1,12 +1,15 @@
-﻿#requires -Version 5.0 -Modules Az.Accounts, Az.Automation, Az.Compute, Az.LogicApp, Az.Network, Az.Resources, Az.TrafficManager, AzureAD
+﻿#requires -Version 5.0 -Modules Az.Accounts, Az.Automation, Az.Compute, Az.LogicApp, Az.Network, Az.Resources, Az.TrafficManager, Az.Monitor, Az.Websites, Az.ServiceBus, Az.Batch, AzureAD
 #!/usr/bin/env powershell
 # Contributors:
-# Chad Schultz
+# Chad Schultz (https://github.com/itoleck)
+# https://github.com/itoleck/AzureSaveMoney
+# 
+# Forked from: https://www.powershellgallery.com/packages/AzureSaveMoney/1.0.13
+# Additions made by Fredrik Eliasson (fredrik.eliasson@basefarm.com) 
 #
 # PowerShell module to List on and delete unused Azure resources and save money.
 #
 # This Sample Code is provided for the purpose of illustration only and is not intended to be used in a production environment.  THIS SAMPLE CODE AND ANY RELATED INFORMATION ARE PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND, EITHER EXPRESSED OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE IMPLIED WARRANTIES OF MERCHANTABILITY AND/OR FITNESS FOR A PARTICULAR PURPOSE.  We grant You a nonexclusive, royalty-free right to use and modify the Sample Code and to reproduce and distribute the object code form of the Sample Code, provided that You agree: (i) to not use Our name, logo, or trademarks to market Your software product in which the Sample Code is embedded; (ii) to include a valid copyright notice on Your software product in which the Sample Code is embedded; and (iii) to indemnify, hold harmless, and defend Us and Our suppliers from and against any claims or lawsuits, including attorneys fees, that arise or result from the use or distribution of the Sample Code.
-
 
 # Class to hold alert resource groups and names as script has to get RGs from different command let than alert.
 Class MyRGandName
@@ -51,7 +54,7 @@ function global:Get-AzSMUnusedNICs {
     $null = Set-AzContext -SubscriptionId $SubscriptionID
   Write-Debug ('Subscription: {0}' -f $SubscriptionID)
 
-  $nics=Get-AzNetworkInterface|Where-Object{!$_.VirtualMachine}
+  $nics=Get-AzNetworkInterface|Where-Object{!$_.VirtualMachine -and !$_.IpConfigurations.PrivateLinkConnectionProperties}
 	
     Return $nics
 }
@@ -1230,7 +1233,7 @@ function global:Get-AzSMVMScaleinfo {
       VMNAME - No CPU data found. VM not running?
       .NOTES
       * CANNOT be piped to any Remove- Azure command.
-      High CPU uasage is > 80%
+      High CPU usage is > 80%
       Low CPU usage is < 20%
       Normal CPU usage is 20% - 79%
       .LINK
@@ -1260,7 +1263,7 @@ function global:Get-AzSMVMScaleinfo {
 
       foreach ($a in $avg) {
         $t=$t+$a.Average
-      }
+        }
       try {
         $cputimeavg=$t/$avg.Count
       } catch {}
@@ -1422,6 +1425,125 @@ function global:Get-AzSMAllResources {
     Get-AzSMVMsNotDeletedAfterImage -SubscriptionID $SubscriptionID
 
     Write-Output 'Load balancers with no backend pool VMs:'
+    Get-AzSMIlbNoBackendPoolVMs -Subscription $SubscriptionID
+
+    Write-Output 'App Service Plan CPU scaling info:'
+    Get-AzSMAppServicePlanScaleinfo -SubscriptionID $SubscriptionID
+}
+
+function global:Invoke-AzSMReport {
+
+    <#
+    
+    #>
+
+    [CmdletBinding(
+      DefaultParameterSetName='SubscriptionID',
+      ConfirmImpact='Low'
+    )]
+  
+    param(
+      [Parameter(Mandatory=$true)][string] $SubscriptionID,
+          [Parameter(Mandatory=$true)][string] $TenantID,
+          [Parameter(Mandatory=$false)][int] $Days = 365,
+          [Parameter(Mandatory=$false)][string] $Applicationid = $null,
+          [Parameter(Mandatory=$false)][string] $CertificateThumbprint = $null
+    )
+  
+    If ($Applicationid -ne $null -AND $CertificateThumbprint -ne $null) {
+      $null = Connect-AzureAD -TenantId $TenantID -ApplicationId $Applicationid -CertificateThumbprint $CertificateThumbprint
+    } 
+    
+    Else {
+      $null = Connect-AzureAD -TenantId $TenantID
+    } 
+        
+    $null = Set-AzContext -SubscriptionId $SubscriptionID
+
+    Write-Verbose 'Querying all resources for savings using the following parameters:'
+    Write-Verbose ('Tenant ID: {0}' -f $TenantID)
+    Write-Verbose ('Subscription ID: {0}' -f $SubscriptionID)
+    Write-Verbose ("Days: {0}`n" -f $Days)
+
+    Write-Verbose 'Ununsed NICs:'
+    Get-AzSMUnusedNICs -Subscription $SubscriptionID
+  
+    Write-Verbose 'Ununsed NSGs:'
+    Get-AzSMUnusedNSGs -Subscription $SubscriptionID
+    
+    Write-Verbose 'Ununsed PIPs:'
+    Get-AzSMUnusedPIPs -Subscription $SubscriptionID
+    
+    Write-Verbose 'Disabled Alerts(Classic):'
+    Get-AzSMDisabledAlerts -Subscription $SubscriptionID
+    
+    Write-Verbose 'Disabled Log Alerts:'
+    Get-AzSMDisabledLogAlerts -Subscription $SubscriptionID
+    
+    Write-Verbose 'Empty Resource Groups:'
+    Get-AzSMEmptyResourceGroups -Subscription $SubscriptionID
+    
+    Write-Verbose 'Ununsed Alert Groups:'
+    Get-AzSMUnusedAlertActionGroups -Subscription $SubscriptionID
+    
+    Write-Verbose 'Ununsed Route Tables:'
+    Get-AzSMUnusedRouteTables -Subscription $SubscriptionID
+    
+    Write-Verbose 'VNets without Subnets:'
+    Get-AzSMVNetsWithoutSubnets -Subscription $SubscriptionID
+    
+    Write-Verbose ('Old Deployments older than {0} days:' -f $Days)
+    Get-AzSMOldDeployments -Subscription $SubscriptionID
+    
+    Write-Verbose 'Ununsed Disks:'
+    Get-AzSMUnusedDisks -Subscription $SubscriptionID
+    
+    Write-Verbose 'Empty AAD Groups:'
+    Get-AzSMEmptyAADGroups -TenantId $TenantID
+    
+    Write-Verbose 'Disabled Logic Apps:'
+    Get-AzSMDisabledLogicApps -Subscription $SubscriptionID
+    
+    Write-Verbose ('Old Snapshots older than {0} days:' -f $Days)
+    Get-AzSMOldSnapshots -Subscription $SubscriptionID
+    
+    Write-Verbose 'Load balancers with no backend pools:'
+    Get-AzSMIlbNoBackendPool -Subscription $SubscriptionID
+
+    Write-Verbose 'Disabled TrafficManager Profiles:'
+    Get-AzSMDisabledTrafficManagerProfiles -Subscription $SubscriptionID
+    
+    Write-Verbose 'TrafficManager Profiles With No Endpoints:'
+    Get-AzSMTrafficManagerProfilesWithNoEndpoints -Subscription $SubscriptionID
+
+    Write-Verbose 'Old Network Watcher packet captures:'
+    Get-AzSMOldNetworkCaptures -SubscriptionID $SubscriptionID
+
+    Write-Verbose 'Unconnected Virtual Network Gateway Connections:'
+    Get-AzSMUnconnectedVirtualNetworkGateways -SubscriptionID $SubscriptionID
+
+    Write-Verbose 'Expired Webhooks:'
+    Get-AzSMExpiredWebhooks -SubscriptionID $SubscriptionID
+  
+    Write-Verbose 'VM CPU scaling info:'
+    Get-AzSMVMScaleinfo -SubscriptionID $SubscriptionID
+
+    Write-Verbose 'Empty Subnets:'
+    Get-AzSMEmptySubnets -SubscriptionID $SubscriptionID
+  
+    Write-Verbose 'Unused App Service Plans:'
+    Get-AzSMUnusedAppServicePlans -SubscriptionID $SubscriptionID
+
+    Write-Verbose 'Disabled Service Bus Queues:'
+    Get-AzSMDisabledServiceBusQueues -SubscriptionID $SubscriptionID
+  
+    Write-Verbose 'Batch Accounts with no Applications:'
+    Get-AzSMEmptyBatchAccounts -SubscriptionID $SubscriptionID
+
+    Write-Verbose 'Virtual Machines that have images. * VMs should be deleted after generalizing and imaging.:'
+    Get-AzSMVMsNotDeletedAfterImage -SubscriptionID $SubscriptionID
+
+    Write-Verbose 'Load balancers with no backend pool VMs:'
     Get-AzSMIlbNoBackendPoolVMs -Subscription $SubscriptionID
 
     Write-Output 'App Service Plan CPU scaling info:'
